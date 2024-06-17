@@ -1,0 +1,112 @@
+--INITIAL RESOURCE SETUP--
+USE ROLE securityadmin;
+CREATE ROLE DEMO_ROLE;
+GRANT ROLE DEMO_ROLE to ROLE sysadmin;
+GRANT ROLE DEMO_ROLE to USER "AEVANS@PHDATA.IO";
+USE ROLE sysadmin;
+CREATE DATABASE DEMOS;
+CREATE WAREHOUSE doom_demo_wh;
+GRANT USAGE ON WAREHOUSE doom_demo_wh TO ROLE demo_role;
+GRANT OWNERSHIP ON DATABASE DEMOS TO ROLE demo_role;
+USE ROLE demo_role;
+CREATE SCHEMA DEMOS.DOOM;
+
+
+--ALLOW DEMO_ROLE TO CREATE ENDPOINTS--
+USE ROLE accountadmin;
+GRANT BIND SERVICE ENDPOINT ON ACCOUNT TO ROLE DEMO_ROLE;
+
+--CREATE ACCESS FROM CONTAINER TO HUGGINGFACE (OR ANYWHERE)--
+USE ROLE demo_role;
+CREATE NETWORK RULE allow_all_rule
+  TYPE = 'HOST_PORT'
+  MODE= 'EGRESS'
+  VALUE_LIST = ('0.0.0.0:443','0.0.0.0:80');
+USE ROLE accountadmin;
+CREATE EXTERNAL ACCESS INTEGRATION all_access_integration
+  ALLOWED_NETWORK_RULES = (allow_all_rule)
+  ENABLED = true;
+USE ROLE securityadmin;
+GRANT USAGE ON INTEGRATION all_access_integration TO ROLE demo_role;
+
+
+USE ROLE demo_role;
+--CREATE DOCKER IMAGE REPOSITORY--
+CREATE OR REPLACE IMAGE REPOSITORY doom_demo_repository;
+
+--CREATE SERVICE SPEC FILE STAGE--
+CREATE STAGE doom_demo_stage DIRECTORY = ( ENABLE = true );
+
+--IMAGE STAGE--
+CREATE STAGE IF NOT EXISTS DOOM_SCREENSHOTS;
+
+-----------------------------------------------
+--PAUSE HERE AND UPLOAD DOCKER IMAGE TO STAGE--
+-----------------------------------------------
+
+--CREATE COMPUTE POOL WITH 1 GPU NODE--
+USE ROLE sysadmin;
+CREATE COMPUTE POOL doom_gpu_pool
+    MIN_NODES = 1
+    MAX_NODES = 1
+    INSTANCE_FAMILY = GPU_NV_S;
+DESCRIBE COMPUTE POOL doom_gpu_pool;
+
+--CREATE COMPUTE POOL WITH 1 CPU NODE--
+USE ROLE sysadmin;
+CREATE COMPUTE POOL doom_cpu_pool
+    MIN_NODES = 1
+    MAX_NODES = 1
+    INSTANCE_FAMILY = CPU_X64_XS;
+DESCRIBE COMPUTE POOL doom_cpu_pool;
+
+--GRANT TO DEMO ROLE--
+GRANT USAGE ON COMPUTE POOL doom_gpu_pool TO ROLE demo_role;
+GRANT MONITOR ON COMPUTE POOL doom_gpu_pool TO ROLE demo_role;
+
+GRANT USAGE ON COMPUTE POOL doom_cpu_pool TO ROLE demo_role;
+GRANT MONITOR ON COMPUTE POOL doom_cpu_pool TO ROLE demo_role;
+
+--SWITCH TO DEMO ROLE--
+USE ROLE demo_role;
+
+--CREATE OLLAMA SERVICE--
+CREATE SERVICE ollama_demo_service
+    IN COMPUTE POOL doom_gpu_pool
+    FROM @doom_demo_stage
+    SPEC = 'ollama_demo_spec.yaml'
+    MIN_INSTANCES = 1
+    MAX_INSTANCES = 1
+    EXTERNAL_ACCESS_INTEGRATIONS = (ALL_ACCESS_INTEGRATION);
+
+DESCRIBE SERVICE ollama_demo_service;
+SELECT SYSTEM$GET_SERVICE_STATUS('ollama_demo_service');
+SHOW ENDPOINTS IN SERVICE ollama_demo_service;
+CALL SYSTEM$GET_SERVICE_LOGS('ollama_demo_service', '0', 'ollamaservice', 1000);
+
+--CREATE DOOM SERVICE--
+CREATE SERVICE doom_demo_service
+    IN COMPUTE POOL doom_cpu_pool
+    FROM @doom_demo_stage
+    SPEC = 'doom_demo_spec.yaml'
+    MIN_INSTANCES = 1
+    MAX_INSTANCES = 1
+    EXTERNAL_ACCESS_INTEGRATIONS = (ALL_ACCESS_INTEGRATION);
+
+DESCRIBE SERVICE doom_demo_service;
+SELECT SYSTEM$GET_SERVICE_STATUS('doom_demo_service');
+SHOW ENDPOINTS IN SERVICE doom_demo_service;
+CALL SYSTEM$GET_SERVICE_LOGS('doom_demo_service', '0', 'doomservice', 1000);
+
+LIST @DOOM_SCREENSHOTS;
+SELECT * FROM image_analysis;
+
+--CLEANUP--
+DROP SERVICE ollama_demo_service;
+DROP SERVICE doom_demo_service;
+DROP STAGE DOOM_SCREENSHOTS;
+DROP TABLE image_analysis;
+
+USE ROLE SYSADMIN;
+DROP COMPUTE POOL doom_gpu_pool;
+DROP COMPUTE POOL doom_cpu_pool;
